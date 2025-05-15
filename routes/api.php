@@ -19,9 +19,6 @@ use App\Http\Controllers\Api\IzinBelajarController;
 
 Route::post('/login', API\Auth\LoginController::class);
 
-Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
-    return $request->user();
-});
 
 Route::get('/status/user', [Api\TestController::class, 'index']);
 

@@ -67,7 +67,7 @@ class IzinBelajarController extends Controller
         ]);
 
         if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
+            return $this->error($validator->errors(), 422);
         }
 
         $data['user_id'] = $request->user_id;
@@ -124,7 +124,7 @@ class IzinBelajarController extends Controller
 
         // dd($request->kategori);
         if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
+            return $this->error($validator->errors(), 422);
         }
 
         $permohonan = $this->permohonan->find($id);
@@ -179,9 +179,7 @@ class IzinBelajarController extends Controller
         DB::commit();
         try {
             $this->permohonan->softDelete($id);
-            return $this->success([
-                'message' => 'Permohonan berhasil dihapus',
-            ]);
+            return $this->success([], 'Permohonan berhasil dihapus');
         } catch (\Throwable $th) {
             saveLogs($th->getMessage(), 'error');
             DB::rollBack();
