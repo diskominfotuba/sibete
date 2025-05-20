@@ -25,6 +25,9 @@ Route::get('/status/user', [Api\TestController::class, 'index']);
 
 Route::prefix('v1')->group(function () {
     Route::apiResource('pemohonan', IzinBelajarController::class);
+    // Tambah route untuk download lampiran proxy
+    Route::get('pemohonan/{id}/download/{lampiran}', [IzinBelajarController::class, 'downloadLampiran'])
+        ->name('pemohonan.downloadLampiran');
 });
 
 

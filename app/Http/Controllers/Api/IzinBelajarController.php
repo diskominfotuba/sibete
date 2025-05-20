@@ -5,53 +5,76 @@ namespace App\Http\Controllers\Api;
 use Illuminate\Support\Str;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
-use App\Jobs\ProcessLampiran;
 use Illuminate\Support\Facades\DB;
 use App\Services\PermohonanService;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
-
 
 class IzinBelajarController extends Controller
 {
     private $permohonan;
 
-    public function __construct(PermohonanService $permohonananService)
+    public function __construct(PermohonanService $permohonanService)
     {
-        $this->permohonan = $permohonananService;
+        $this->permohonan = $permohonanService;
+    }
+
+    public function downloadLampiran($id, $lampiran)
+    {
+        $permohonan = $this->permohonan->find($id);
+        $kategori = strtolower(str_replace(' ', '_', $permohonan->kategori));
+        $filename = $permohonan->$lampiran;
+
+        if (!$filename) {
+            abort(404, 'File tidak ditemukan');
+        }
+
+        $filePath = "lampiran/{$kategori}/" . date('Y') . "/{$filename}";
+
+        // Generate signed URL berlaku 10 menit
+        $temporaryUrl = Storage::disk('s3')->temporaryUrl($filePath, now()->addMinutes(10));
+
+        return redirect($temporaryUrl);
     }
 
     public function index(Request $request)
     {
         $query = $this->permohonan->query();
 
-        if ($request->has('kategori')) {
-            $query->where('kategori', $request->kategori);
-        } else {
-            $query->whereIn('kategori', ['izin_belajar', 'mutasi']);
-        }
+        $kategori = $request->kategori ?? ['izin_belajar', 'mutasi'];
+        $query->whereIn('kategori', (array) $kategori);
 
-        $izinBelajar = $query->latest()->get();
+        $results = $query->latest()->get();
 
-        return $this->success($izinBelajar);
+        $results->transform(function ($item) {
+            foreach (['lampiran1', 'lampiran2', 'lampiran3', 'lampiran4', 'lampiran5'] as $lampiran) {
+                if (!empty($item->$lampiran)) {
+                    // Buat URL proxy ke route download di API v1 prefix
+                    $item->$lampiran = route('pemohonan.downloadLampiran', ['id' => $item->id, 'lampiran' => $lampiran]);
+                } else {
+                    $item->$lampiran = null;
+                }
+            }
+
+            return $item;
+        });
+
+        return $this->success($results);
     }
 
-
-    public function create()
+    public function create(Request $request)
     {
-        $izin_belajar = $this->permohonan->Query()
-            ->where('user_id', auth()->id())
+        $izinBelajar = $this->permohonan->query()
+            ->where('user_id', $request->user_id)
             ->whereIn('kategori', ['izin_belajar', 'mutasi'])
-            ->latest()->first();
+            ->latest()
+            ->first();
 
-        if ($izin_belajar && $izin_belajar->status !== 'diterima') {
-            return $this->warning('Mohon maaf untuk saat ini Anda belum bisa mengajukan permohonan, karena ada permohonan sebelumnya yang belum selesai!');
+        if ($izinBelajar && $izinBelajar->status !== 'diterima') {
+            return $this->warning('Mohon maaf, Anda belum bisa mengajukan permohonan karena permohonan sebelumnya belum selesai!');
         }
 
-        return $this->success([
-            'message' => 'Form izin_belajar atau alih tugas',
-        ]);
+        return $this->success(['message' => 'Form izin_belajar atau alih tugas']);
     }
 
     public function store(Request $request)
@@ -70,51 +93,48 @@ class IzinBelajarController extends Controller
             return $this->error($validator->errors(), 422);
         }
 
-        $data['user_id'] = $request->user_id;
-        $data['kategori'] = $request->kategori;
+        $data = $request->only(['user_id', 'kategori']);
 
-        $existingPermohonan = $this->permohonan->Query()
+        $existing = $this->permohonan->query()
             ->where('user_id', $request->user_id)
             ->where('kategori', $request->kategori)
-            ->latest()->first();
+            ->latest()
+            ->first();
 
-        if ($existingPermohonan && $existingPermohonan->status !== 'diterima') {
-            return $this->warning('Mohon maaf untuk saat ini Anda belum bisa mengajukan permohonan, karena ada permohonan sebelumnya yang belum selesai!');
+        if ($existing && $existing->status !== 'diterima') {
+            return $this->warning('Mohon maaf, Anda belum bisa mengajukan permohonan karena permohonan sebelumnya belum selesai!');
         }
 
         $pathFile = 'lampiran/' . strtolower(str_replace(' ', '_', $request->kategori)) . '/' . date('Y');
 
-        if ($request->hasFile('lampiran1')) {
-            $data['lampiran1'] = $this->uploadLampiran($request, 'lampiran1', uniqid() . '_surat_pengantar_dari_opd.pdf', $pathFile);
-        }
-        if ($request->hasFile('lampiran2')) {
-            $data['lampiran2'] = $this->uploadLampiran($request, 'lampiran2', uniqid() .'_sk_pangkat_atau_jabatan_terakhir.pdf', $pathFile);
-        }
-        if ($request->hasFile('lampiran3')) {
-            $data['lampiran3'] = $this->uploadLampiran($request, 'lampiran3', uniqid() .'_skp_1_tahun_terakhir.pdf', $pathFile);
-        }
-        if ($request->hasFile('lampiran4')) {
-            $data['lampiran4'] = $this->uploadLampiran($request, 'lampiran4', uniqid() . '_daftar_hadir_3_bulan_terakhir.pdf', $pathFile);
-        }
-        if ($request->hasFile('lampiran5')) {
-            $data['lampiran5'] = $this->uploadLampiran($request, 'lampiran5', '_lampiran_tambahan_alih_tugas.pdf', $pathFile);
+        $lampiranList = [
+            'lampiran1' => 'surat_pengantar_dari_opd.pdf',
+            'lampiran2' => 'sk_pangkat_atau_jabatan_terakhir.pdf',
+            'lampiran3' => 'skp_1_tahun_terakhir.pdf',
+            'lampiran4' => 'daftar_hadir_3_bulan_terakhir.pdf',
+            'lampiran5' => 'lampiran_tambahan_alih_tugas.pdf',
+        ];
+
+        foreach ($lampiranList as $key => $filename) {
+            if ($request->hasFile($key)) {
+                $data[$key] = $this->uploadLampiran($request, $key, $filename, $pathFile);
+            }
         }
 
+        DB::beginTransaction();
         try {
             $this->permohonan->store($data);
+            DB::commit();
+            return $this->success(null, 'Permohonan berhasil diajukan', 201);
         } catch (\Throwable $th) {
-            saveLogs($th->getMessage(), 'error');
             DB::rollBack();
             return $this->error('Gagal mengajukan permohonan');
         }
-
-        return $this->success([], 'Permohonan berhasil diajukan', 201);
     }
 
     public function update(Request $request, $id)
     {
         $validator = Validator::make($request->all(), [
-            'kategori' => 'required|in:izin_belajar,mutasi',
             'lampiran1' => 'nullable|mimes:pdf|max:2048',
             'lampiran2' => 'nullable|mimes:pdf|max:2048',
             'lampiran3' => 'nullable|mimes:pdf|max:2048',
@@ -122,7 +142,6 @@ class IzinBelajarController extends Controller
             'lampiran5' => 'nullable|mimes:pdf|max:2048',
         ]);
 
-        // dd($request->kategori);
         if ($validator->fails()) {
             return $this->error($validator->errors(), 422);
         }
@@ -133,60 +152,50 @@ class IzinBelajarController extends Controller
             return $this->error('Permohonan tidak ditemukan', 404);
         }
 
-        // Siapkan array data
+        $pathFile = 'lampiran/' . strtolower(str_replace(' ', '_', $permohonan->kategori)) . '/' . date('Y');
+
         $data = [];
+        $lampiranList = [
+            'lampiran1' => 'surat_pengantar_dari_opd.pdf',
+            'lampiran2' => 'sk_pangkat_atau_jabatan_terakhir.pdf',
+            'lampiran3' => 'skp_1_tahun_terakhir.pdf',
+            'lampiran4' => 'daftar_hadir_3_bulan_terakhir.pdf',
+            'lampiran5' => 'lampiran_tambahan_alih_tugas.pdf',
+        ];
 
-        // Validasi kategori
-        $pathFile = 'lampiran/' . strtolower(str_replace(' ', '_', $request->kategori)) . '/' . date('Y');
-
-        // Delete file dulu sebelum diupdate
-        if ($request->hasFile('lampiran1') && $permohonan->lampiran1) {
-            Storage::disk('s3')->delete($pathFile . '/' . $permohonan->lampiran1);
-            $data['lampiran1'] = $this->uploadLampiran($request, 'lampiran1', uniqid() . '_surat_pengantar_dari_opd.pdf', $pathFile);
-        }
-        if ($request->hasFile('lampiran2') && $permohonan->lampiran2) {
-            Storage::disk('s3')->delete($pathFile . '/' . $permohonan->lampiran2);
-            $data['lampiran2'] = $this->uploadLampiran($request, 'lampiran2', uniqid() . '_sk_pangkat_atau_jabatan_terakhir.pdf', $pathFile);
-        }
-        if ($request->hasFile('lampiran3') && $permohonan->lampiran3) {
-            Storage::disk('s3')->delete($pathFile . '/' . $permohonan->lampiran3);
-            $data['lampiran3'] = $this->uploadLampiran($request, 'lampiran3', uniqid() . '_skp_1_tahun_terakhir.pdf', $pathFile);
-        }
-        if ($request->hasFile('lampiran4') && $permohonan->lampiran4) {
-            Storage::disk('s3')->delete($pathFile . '/' . $permohonan->lampiran4);
-            $data['lampiran4'] = $this->uploadLampiran($request, 'lampiran4', uniqid() . '_daftar_hadir_3_bulan_terakhir.pdf', $pathFile);
-        }
-        if ($request->hasFile('lampiran5') && $permohonan->lampiran5) {
-            Storage::disk('s3')->delete($pathFile . '/' . $permohonan->lampiran5);
-            $data['lampiran5'] = $this->uploadLampiran($request, 'lampiran5', '_lampiran_tambahan_alih_tugas.pdf', $pathFile);
-        }
-
+        DB::beginTransaction();
         try {
-            $this->permohonan->update($id, array_merge($request->all(), $data ?? []));
+            foreach ($lampiranList as $key => $filename) {
+                if ($request->hasFile($key)) {
+                    if ($permohonan->$key) {
+                        Storage::disk('s3')->delete($pathFile . '/' . $permohonan->$key);
+                    }
+                    $data[$key] = $this->uploadLampiran($request, $key, uniqid() . '_' . $filename, $pathFile);
+                }
+            }
+
+            $this->permohonan->update($id, array_merge($request->except('kategori'), $data));
             DB::commit();
+
             return $this->success([], 'Permohonan berhasil diperbarui');
         } catch (\Throwable $th) {
-            saveLogs($th->getMessage(), 'error');
             DB::rollBack();
             return $this->error('Gagal memperbarui permohonan', 500);
         }
     }
 
-
     public function destroy($id)
     {
         DB::beginTransaction();
-        DB::commit();
         try {
             $this->permohonan->softDelete($id);
+            DB::commit();
             return $this->success([], 'Permohonan berhasil dihapus');
         } catch (\Throwable $th) {
-            saveLogs($th->getMessage(), 'error');
             DB::rollBack();
             return $this->error('Gagal menghapus permohonan', 500);
         }
     }
-
 
     private function uploadLampiran($request, $field, $filename, $path)
     {
@@ -195,10 +204,6 @@ class IzinBelajarController extends Controller
             $request->file($field)->storeAs($path, $uniqueName, 's3');
             return $uniqueName;
         }
-
         return null;
     }
-
-
-
 }
