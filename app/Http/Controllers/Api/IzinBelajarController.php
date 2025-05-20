@@ -19,40 +19,23 @@ class IzinBelajarController extends Controller
         $this->permohonan = $permohonanService;
     }
 
-    public function downloadLampiran($id, $lampiran)
-    {
-        $permohonan = $this->permohonan->find($id);
-        $kategori = strtolower(str_replace(' ', '_', $permohonan->kategori));
-        $filename = $permohonan->$lampiran;
-
-        if (!$filename) {
-            abort(404, 'File tidak ditemukan');
-        }
-
-        $filePath = "lampiran/{$kategori}/" . date('Y') . "/{$filename}";
-
-        // Generate signed URL berlaku 10 menit
-        $temporaryUrl = Storage::disk('s3')->temporaryUrl($filePath, now()->addMinutes(10));
-
-        return redirect($temporaryUrl);
-    }
-
     public function index(Request $request)
     {
         $query = $this->permohonan->query();
-
         $kategori = $request->kategori ?? ['izin_belajar', 'mutasi'];
         $query->whereIn('kategori', (array) $kategori);
-
         $results = $query->latest()->get();
 
-        $results->transform(function ($item) {
-            foreach (['lampiran1', 'lampiran2', 'lampiran3', 'lampiran4', 'lampiran5'] as $lampiran) {
-                if (!empty($item->$lampiran)) {
-                    // Buat URL proxy ke route download di API v1 prefix
-                    $item->$lampiran = route('pemohonan.downloadLampiran', ['id' => $item->id, 'lampiran' => $lampiran]);
-                } else {
-                    $item->$lampiran = null;
+        // Map setiap item untuk ubah field lampiran jadi full URL
+        $results = $results->map(function ($item) {
+            $folder = 'lampiran/' . $item->kategori . '/' . date('Y');
+
+            for ($i = 1; $i <= 4; $i++) {
+                $key = "lampiran$i";
+                if (!empty($item->$key)) {
+                    $item->$key = \Illuminate\Support\Facades\Storage::disk('s3')->url(
+                        $folder . '/' . $item->$key
+                    );
                 }
             }
 
@@ -61,6 +44,7 @@ class IzinBelajarController extends Controller
 
         return $this->success($results);
     }
+
 
     public function create(Request $request)
     {
